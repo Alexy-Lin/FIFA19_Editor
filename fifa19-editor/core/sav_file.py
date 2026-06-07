@@ -1,0 +1,53 @@
+"""SavFile — handles FIFA 19 .sav container files (FBCHUNKS wrapper + DB data)."""
+
+from pathlib import Path
+from typing import Optional
+from .db_file import DbFile
+from .meta_parser import MetaDatabase
+
+
+class SavFile:
+    """FIFA 19 squad/career save file."""
+
+    DB_MAGIC = b"DB\x00\x08"
+
+    def __init__(self):
+        self.fbchunks_header: bytes = b""
+        self.db: Optional[DbFile] = None
+        self.filepath: Optional[Path] = None
+
+    def load(self, filepath: Path, meta_db: Optional[MetaDatabase] = None):
+        """Load a .sav file."""
+        self.filepath = Path(filepath)
+
+        with open(filepath, "rb") as f:
+            data = f.read()
+
+        # Find the embedded DB signature
+        db_pos = data.find(self.DB_MAGIC)
+        if db_pos == -1:
+            raise ValueError(
+                f"Not a valid FIFA save file: DB signature not found in {filepath}"
+            )
+
+        # Preserve the FBCHUNKS header for later save
+        self.fbchunks_header = data[:db_pos]
+
+        # Load the DB portion
+        self.db = DbFile()
+        self.db.load(data[db_pos:], meta_db)
+
+    def save(self, filepath: Optional[Path] = None):
+        """Save the DB back to a .sav file (preserving FBCHUNKS header)."""
+        raise NotImplementedError("Save functionality not yet implemented")
+
+    def summary(self) -> str:
+        """Return a human-readable summary."""
+        lines = [
+            f"SAV File: {self.filepath}",
+            f"  FBCHUNKS header: {len(self.fbchunks_header)} bytes",
+            "",
+        ]
+        if self.db:
+            lines.append(self.db.summary())
+        return "\n".join(lines)

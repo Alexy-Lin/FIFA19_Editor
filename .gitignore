@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Test/export data
+players.txt
+players.xlsx
+squad_full.xlsx
+teams.txt
+*.csv
+editedplayernames.txt
+
+# Duplicate save files
+Squads20260423210221 (2)
+Squads* (2).*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+ehthumbs.db
+Desktop.ini
+
+# Project specific
+data/player_names.csv
