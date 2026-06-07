@@ -11,9 +11,10 @@ class FieldDescriptor:
     __slots__ = (
         "field_type", "bit_offset", "short_name", "short_name_str",
         "depth", "range_low", "range_high", "field_name",
+        "_original_index",
     )
 
-    def __init__(self):
+    def __init__(self, index: int = 0):
         self.field_type: EFieldTypes = EFieldTypes.Integer
         self.bit_offset: int = 0
         self.short_name: bytes = b"\x00\x00\x00\x00"
@@ -22,6 +23,7 @@ class FieldDescriptor:
         self.range_low: int = 0
         self.range_high: int = 0
         self.field_name: str = ""
+        self._original_index: int = index
 
     def load(self, reader: DbReader):
         """Read field descriptor from binary (16 bytes)."""
@@ -34,6 +36,10 @@ class FieldDescriptor:
             "ascii", errors="replace"
         )
         self.depth = struct.unpack("<I", reader.read_bytes(4))[0]
+
+    def set_original_index(self, index: int):
+        """Set the original field order index (for writing back)."""
+        self._original_index = index
 
     def apply_xml_metadata(self, name: str, range_low: int, range_high: int):
         """Apply field metadata from XML schema."""

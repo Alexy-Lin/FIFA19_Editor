@@ -37,9 +37,24 @@ class SavFile:
         self.db = DbFile()
         self.db.load(data[db_pos:], meta_db)
 
-    def save(self, filepath: Optional[Path] = None):
+    def save(self, filepath: Optional[Path] = None) -> Path:
         """Save the DB back to a .sav file (preserving FBCHUNKS header)."""
-        raise NotImplementedError("Save functionality not yet implemented")
+        if self.db is None:
+            raise ValueError("No DB loaded — nothing to save.")
+
+        output_path = Path(filepath) if filepath else self.filepath
+        if output_path is None:
+            raise ValueError("No output path specified.")
+
+        # Serialize DB
+        db_data = self.db.save()
+
+        # Write: FBCHUNKS header + DB data
+        with open(output_path, "wb") as f:
+            f.write(self.fbchunks_header)
+            f.write(db_data)
+
+        return output_path
 
     def summary(self) -> str:
         """Return a human-readable summary."""
