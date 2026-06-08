@@ -1,7 +1,6 @@
 """Table — parses a single DB table: header, field descriptors, and records."""
 
 import struct
-import zlib
 from typing import List, Optional, Dict, Any
 from .db_reader import DbReader
 from .db_writer import DbWriter
@@ -78,9 +77,9 @@ def _compute_crc(data: bytes) -> int:
         0xE3A1CBC1, 0xE760D676, 0xEA23F0AF, 0xEEE2ED18,
         0xF0A5BD1D, 0xF464A0AA, 0xF9278673, 0xFDE69BC4,
         0x89B8FD09, 0x8D79E0BE, 0x803AC667, 0x84FBDBD0,
-        0x9ABC8BD5, 0x9E7D9662, 0xDE3EB0BB, 0xDAFFAD0C,
-        0xE2B010B1, 0xE6710D06, 0xEB322BDF, 0xEFF33668,
-        0xF1B4666D, 0xF5757BDA, 0xF8365D03, 0xFCF740B4,
+        0x9ABC8BD5, 0x9E7D9662, 0x933EB0BB, 0x97FFAD0C,
+        0xAFB010B1, 0xAB710D06, 0xA6322BDF, 0xA2F33668,
+        0xBCB4666D, 0xB8757BDA, 0xB5365D03, 0xB1F740B4,
     ]
     crc = 0xFFFFFFFF
     for byte in data:
@@ -109,11 +108,13 @@ class Table:
         self.n_valid_records: int = 0   # used slots
         self.unknown14: int = 0
         self.n_fields: int = 0
+        self._field_count_raw: int = 0  # uint32 at offset 24 (= n_fields + 0x100 in all observed tables)
         self.unknown1c: int = 0
         self.crc_table_header: int = 0
 
         # Records data position/bookkeeping
         self._records_byte_start: int = 0
+        self._raw_records_data: bytes = b""  # raw bytes for ALL record slots (valid + empty/deleted)
         self._compressed_string_data: bytes = b""
         self._trailing_data: bytes = b""  # records CRC + table metadata after compressed strings
         # end byte position in the original binary (after trailing data)
@@ -132,8 +133,10 @@ class Table:
         self.n_records = struct.unpack("<H", reader.read_bytes(2))[0]
         self.n_valid_records = struct.unpack("<H", reader.read_bytes(2))[0]
         self.unknown14 = struct.unpack("<i", reader.read_bytes(4))[0]
-        self.n_fields = reader.read_bytes(1)[0]
-        reader.read_bytes(3)  # 3 padding bytes
+        # Bytes 24-27: uint32 = n_fields + 0x100 (NOT 1 byte + 3 padding)
+        field_count_raw = struct.unpack("<I", reader.read_bytes(4))[0]
+        self.n_fields = field_count_raw & 0xFF
+        self._field_count_raw = field_count_raw
         self.unknown1c = struct.unpack("<I", reader.read_bytes(4))[0]
         self.crc_table_header = struct.unpack("<I", reader.read_bytes(4))[0]
 
@@ -172,8 +175,14 @@ class Table:
             if record is not None:
                 self.records.append(record)
 
+        # Capture raw record data (including deleted/empty slots — may contain non-zero data)
+        records_total_size = self.n_records * self.record_size
+        self._raw_records_data = reader._data[
+            self._records_byte_start : self._records_byte_start + records_total_size
+        ]
+
         # Advance reader position past all record slots (including deleted)
-        records_end = self._records_byte_start + self.n_records * self.record_size
+        records_end = self._records_byte_start + records_total_size
         reader.position = records_end
 
         # Skip compressed string data if present
@@ -212,10 +221,20 @@ class Table:
         return record
 
     def save(self) -> bytes:
-        """Serialize the table back to binary format."""
+        """Serialize the table back to binary format (RDBM-verified format).
+
+        Key changes from the original game format:
+          - field_count_raw = n_fields   (not n_fields + 0x100)
+          - Table header CRC recomputed  (covers header bytes 0-31)
+          - Trailing CRC = _compute_crc(FD + records + compressed_str)
+          - Record overlay preserves original padding bits
+
+        The game uses CRC-32/MPEG-2 (_compute_crc) to verify ALL CRCs
+        when field_count_raw equals just n_fields.
+        """
         writer = DbWriter()
 
-        # -- Table header (36 bytes, CRC field set to 0 initially) --
+        # -- Table header (36 bytes, CRC=0 placeholder) --
         writer.write_raw_bytes(struct.pack("<I", self.unknown00))
         writer.write_raw_bytes(struct.pack("<I", self.record_size))
         writer.write_raw_bytes(struct.pack("<I", self.n_bit_records))
@@ -223,13 +242,10 @@ class Table:
         writer.write_raw_bytes(struct.pack("<H", self.n_records))
         writer.write_raw_bytes(struct.pack("<H", self.n_valid_records))
         writer.write_raw_bytes(struct.pack("<i", self.unknown14))
-        writer.write_raw_bytes(bytes([self.n_fields]))
-        writer.write_raw_bytes(b"\x00\x00\x00")  # 3 padding bytes
+        # RDBM format: write just n_fields, not n_fields + 0x100
+        writer.write_raw_bytes(struct.pack("<I", self.n_fields))
         writer.write_raw_bytes(struct.pack("<I", self.unknown1c))
         writer.write_raw_bytes(struct.pack("<I", 0))  # CRC placeholder
-
-        # Save header start for CRC calculation
-        header_bytes = writer.to_bytes()  # 36 bytes
 
         # -- Field descriptors (in original file order) --
         for fd in self.fields:
@@ -238,60 +254,61 @@ class Table:
             writer.write_raw_bytes(fd.short_name)
             writer.write_raw_bytes(struct.pack("<i", fd.depth))
 
-        field_desc_start = 36  # after header
-        # field_desc_end = writer.byte_count()
-
-        # -- Records --
-        # Sort field descriptors by bit_offset for writing record data
+        # -- Records: encode from scratch (RDBM format zeros padding bits) --
+        # RDBM's PushIntegerPc re-encodes all records, clearing any padding
+        # bits that fall outside defined fields.  The game requires this
+        # zero-padding when field_count_raw equals just n_fields.
         sorted_fields = sorted(self.fields, key=lambda f: f.bit_offset)
-
+        valid_size = self.n_valid_records * self.record_size
         for rec_idx in range(self.n_valid_records):
             record = self.records[rec_idx]
             rec_bytes = self._write_record(record, sorted_fields)
-            # Pad or truncate to exactly record_size bytes
             if len(rec_bytes) < self.record_size:
                 rec_bytes += b"\x00" * (self.record_size - len(rec_bytes))
             elif len(rec_bytes) > self.record_size:
                 rec_bytes = rec_bytes[:self.record_size]
             writer.write_raw_bytes(rec_bytes)
 
-        # Pad deleted/empty slots with zeros
-        for _ in range(self.n_records - self.n_valid_records):
-            writer.write_raw_bytes(b"\x00" * self.record_size)
+        # Preserve original data for deleted/empty slots
+        if len(self._raw_records_data) > valid_size:
+            writer.write_raw_bytes(self._raw_records_data[valid_size:])
 
         # -- Compressed string data (preserve original) --
         if self.compressed_string_length > 0:
             writer.write_raw_bytes(self._compressed_string_data)
 
-        # Now compute CRCs
         table_data = writer.to_bytes()
 
-        # CRC1: Table header CRC (bytes 0-31 of header, i.e. before CRC field)
-        header_crc_data = table_data[:32]  # first 32 bytes, CRC excluded
-        header_crc = _compute_crc(header_crc_data)
-        # Patch CRC at bytes 32-35
+        # -- Compute and patch table header CRC: covers bytes 0-31 --
+        header_crc = _compute_crc(table_data[:32])
         table_data = table_data[:32] + struct.pack("<I", header_crc) + table_data[36:]
 
-        # CRC2: Records CRC + trailing metadata (preserved from original if unmodified)
-        records_data = table_data[36:]  # everything after the header
-        records_crc = _compute_crc(records_data)
+        # -- Compute and patch trailing CRC: covers FD + records + compressed_str --
+        content = table_data[36:]
+        records_crc = _compute_crc(content)
 
-        # Write trailing data: recompute CRC but preserve the rest
-        if len(self._trailing_data) >= 4:
-            # Replace first 4 bytes with recomputed CRC, keep rest intact
-            table_data += struct.pack("<I", records_crc) + self._trailing_data[4:]
-        elif len(self._trailing_data) > 0:
-            # Less than 4 bytes of trailing data (unusual)
-            table_data += self._trailing_data
-        else:
-            # No trailing data - append just the CRC
-            table_data += struct.pack("<I", records_crc)
+        # Build new trailing (24-byte RDBM format): CRC + metadata
+        records_crc = _compute_crc(content)
+        TRAILING_SIZE = 24
+        meta = self._trailing_data[4:TRAILING_SIZE] if len(self._trailing_data) >= 4 else b""
+        if len(meta) < TRAILING_SIZE - 4:
+            meta += b"\x00" * (TRAILING_SIZE - 4 - len(meta))
+        new_trailing = struct.pack("<I", records_crc) + meta[:TRAILING_SIZE - 4]
 
+        table_data += new_trailing
         return table_data
 
     def _write_record(self, record: Dict[str, Any],
-                      sorted_fields: List[FieldDescriptor]) -> bytes:
-        """Encode a single record's fields using DbWriter. Returns raw bytes."""
+                      sorted_fields: List[FieldDescriptor],
+                      original_bytes: bytes = b"") -> bytes:
+        """Encode a single record's fields using DbWriter.
+
+        Field bits are overlaid onto *original_bytes*, preserving any
+        padding bits that lie beyond the last defined field.  This ensures
+        that re-serialising an unmodified record produces exactly the
+        original bytes, which is required for CRC tables whose algorithm
+        cannot be reproduced by _compute_crc.
+        """
         rw = DbWriter()
         for fd in sorted_fields:
             key = fd.field_name or fd.short_name_str
@@ -311,7 +328,37 @@ class Table:
                 rw.write_integer(value, 32, 0)
             else:
                 rw.write_integer(0, fd.depth, 0)
-        return rw.to_bytes()
+
+        field_bytes = rw.to_bytes()
+
+        if original_bytes and len(original_bytes) >= self.record_size:
+            # Overlay field bits onto original bytes, preserving padding
+            result = bytearray(original_bytes[:self.record_size])
+            # Compute last field's end bit to identify the boundary
+            last_end = max((fd.bit_offset + fd.depth) for fd in sorted_fields) if sorted_fields else 0
+            last_byte = last_end // 8            # byte index of the last field bit
+            padding_start_bit = last_end % 8      # first *padding* bit within that byte
+
+            # Full field bytes: bytes 0 .. last_byte-1 get the complete computed value
+            for i in range(min(last_byte, len(field_bytes))):
+                result[i] = field_bytes[i]
+
+            # Partial byte (if any): keep field bits from computed, padding from original
+            if last_byte < self.record_size and last_byte < len(field_bytes):
+                mask = (1 << padding_start_bit) - 1   # bits [0..padding_start_bit-1] = field
+                result[last_byte] = (
+                    (field_bytes[last_byte] & mask)
+                    | (original_bytes[last_byte] & ~mask)
+                )
+            # Bytes beyond last_byte are pure padding — already preserved from original
+            return bytes(result)
+
+        # No original bytes — pad with zeros
+        if len(field_bytes) < self.record_size:
+            field_bytes += b"\x00" * (self.record_size - len(field_bytes))
+        elif len(field_bytes) > self.record_size:
+            field_bytes = field_bytes[:self.record_size]
+        return field_bytes
 
     # ------------------------------------------------------------------
     # Field lookups

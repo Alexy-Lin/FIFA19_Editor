@@ -16,6 +16,7 @@ from core.sav_file import SavFile
 from core.meta_parser import MetaDatabase
 from core.name_resolver import NameResolver
 from core.exporter import export_to_excel
+from core.config import save as save_config
 from .player_editor import PlayerEditor
 from .table_model import FifaTableModel
 from .player_stats_table import PlayerStatsTable
@@ -222,10 +223,15 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        save_action = QAction("Save As...", self)
+        save_action = QAction("Save", self)
         save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self._on_save_as)
+        save_action.triggered.connect(self._on_save)
         file_menu.addAction(save_action)
+
+        save_as_action = QAction("Save As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self._on_save_as)
+        file_menu.addAction(save_as_action)
 
         file_menu.addSeparator()
 
@@ -303,6 +309,10 @@ class MainWindow(QMainWindow):
             new_sav.load(Path(path), self._meta_db)
             self._sav = new_sav
             self._rebuild_tabs()
+
+            # Remember this path for next launch
+            save_config({"last_save_path": str(Path(path).resolve())})
+
             self.statusBar().showMessage(
                 f"Loaded: {path} — "
                 f"{len(self._sav.db.tables)} tables, "
@@ -373,6 +383,39 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Export Error", str(e))
 
+    def _on_save(self):
+        """Save directly to the currently opened file (no prompt)."""
+        if not self._sav or not self._sav.db:
+            QMessageBox.warning(self, "No Data", "No save file loaded.")
+            return
+
+        if not self._sav.filepath:
+            # No file opened yet — fall back to Save As
+            self._on_save_as()
+            return
+
+        # Apply any pending changes in the player editor first
+        if self._player_editor:
+            changes = self._player_editor.get_modified()
+            if changes:
+                reply = QMessageBox.question(
+                    self, "Apply Changes",
+                    f"{sum(len(c) for _, c in changes)} attribute change(s) pending. "
+                    "Apply them before saving?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply == QMessageBox.No:
+                    return
+                self._player_editor.apply_changes()
+
+        try:
+            self._sav.save()
+            save_config({"last_save_path": str(self._sav.filepath.resolve())})
+            self._status_label.setText(f"Saved to {self._sav.filepath.name}")
+            self.statusBar().showMessage(f"Saved to {self._sav.filepath.name}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save file:\n{e}")
+
     def _on_save_as(self):
         """Save the modified DB back to a .sav file."""
         if not self._sav or not self._sav.db:
@@ -402,6 +445,7 @@ class MainWindow(QMainWindow):
 
         try:
             self._sav.save(Path(path))
+            save_config({"last_save_path": str(Path(path).resolve())})
             self._status_label.setText(f"Saved to {Path(path).name}")
             self.statusBar().showMessage(f"Saved to {path}", 5000)
             self.setWindowTitle(f"FIFA 19 Save Editor — {Path(path).name}")

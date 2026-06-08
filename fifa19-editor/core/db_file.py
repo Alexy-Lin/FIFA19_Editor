@@ -108,8 +108,6 @@ class DbFile:
         writer.write_raw_bytes(struct.pack("<I", self.n_tables))     # 16-19: n_tables
         writer.write_raw_bytes(struct.pack("<I", 0))              # 20-23: CRC placeholder
 
-        header_to_crc = writer.to_bytes()  # first 24 bytes with CRC=0
-
         # -- Table directory + short names CRC placeholder --
         table_dir_start = writer.byte_count()
         for name in self._table_order:

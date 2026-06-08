@@ -1,8 +1,7 @@
 """FIFA 19 Save Editor — GUI launcher.
 
-Usage:
-    python main_gui.py <path_to_sav_file>   # Launch GUI with a save file
-    python main_gui.py                      # Launch GUI, then open via File menu
+Loads the last-opened save file from config, or falls back to the first
+Squads*.sav found next to the meta XML.
 """
 
 import sys
@@ -13,10 +12,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import Qt
 
 from core.sav_file import SavFile
 from core.meta_parser import MetaDatabase
+from core.config import load as load_config, save as save_config
 from gui.main_window import MainWindow
 
 META_XML_PATH = Path(__file__).resolve().parent.parent / "fifa_ng_db-meta.xml"
@@ -26,23 +25,33 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("FIFA 19 Save Editor")
 
-    # Parse args
-    sav_path = None
-    if len(sys.argv) > 1:
-        sav_path = Path(sys.argv[1])
-        if not sav_path.exists():
-            print(f"Error: File not found: {sav_path}")
-            sys.exit(1)
-        if sav_path.suffix not in ("", ".sav"):
-            print(f"Warning: {sav_path} may not be a valid save file")
-
     # Load meta XML
     print(f"Loading meta XML: {META_XML_PATH}")
     t0 = time.time()
     meta_db = MetaDatabase.from_file(META_XML_PATH)
     print(f"  Parsed {len(meta_db.tables)} table definitions ({time.time()-t0:.1f}s)")
 
-    # Load save file if provided
+    # Determine which save file to load
+    cfg = load_config()
+    last = cfg.get("last_save_path")
+    last_valid = last and Path(last).exists()
+
+    if last_valid:
+        print(f"Auto-loading last opened: {last}")
+        sav_path = Path(last)
+    else:
+        # Fallback: look for any Squads*.sav next to the meta XML
+        print("  (no last_save_path in config)")
+        sav_dir = META_XML_PATH.parent
+        candidates = sorted(sav_dir.glob("Squads*.sav"))
+        if candidates:
+            sav_path = candidates[-1]
+            print(f"  (found fallback: {sav_path.name})")
+            save_config({"last_save_path": str(sav_path.resolve())})
+        else:
+            sav_path = None
+
+    # Load save file if we have a path
     sav = None
     if sav_path:
         print(f"\nLoading SAV file: {sav_path}")
@@ -58,6 +67,8 @@ def main():
         sav = SavFile()
 
     window = MainWindow(sav, meta_db)
+    if sav_path:
+        window.setWindowTitle(f"FIFA 19 Save Editor — {sav_path.name}")
     window.show()
 
     sys.exit(app.exec())
