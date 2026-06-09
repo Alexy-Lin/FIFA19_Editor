@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QScrollArea,
     QFormLayout, QSpinBox, QDoubleSpinBox,
     QGroupBox, QMessageBox, QFrame, QGridLayout,
-    QSizePolicy,
+    QSizePolicy, QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -102,18 +102,20 @@ ATTRIBUTE_CATEGORIES = [
         ("height", "Height (cm)"),
         ("weight", "Weight (kg)"),
         ("birthdate", "Birthdate"),
-        ("nationality", "Nationality ID"),
+        ("nationality", "Nationality"),
         ("bodytypecode", "Body Type"),
     ]),
 ]
 
 
 POSITION_NAMES = {
-    0: "GK", 1: "SW", 2: "RWB", 3: "RB", 4: "CB", 5: "LB",
-    6: "LWB", 7: "CDM", 8: "RM", 9: "CM", 10: "LM",
-    11: "CAM", 12: "RF", 13: "CF", 14: "LF", 15: "RW",
-    16: "ST", 17: "LW",
+     0: "GK",   1: "SW",    2: "RWB",   3: "RB",
+     5: "CB",   7: "LB",    8: "LWB",  10: "CDM",
+    12: "RM",  14: "CM",   16: "LM",   18: "CAM",
+    21: "CF",  23: "RW",   25: "ST",   27: "LW",
 }
+
+POSITION_FIELDS = {"preferredposition1", "preferredposition2", "preferredposition3", "preferredposition4"}
 
 WEAK_FOOT = {1: "★", 2: "★★", 3: "★★★", 4: "★★★★", 5: "★★★★★"}
 SKILL_MOVES = {0: "☆", 1: "★", 2: "★★", 3: "★★★", 4: "★★★★", 5: "★★★★★"}
@@ -264,8 +266,9 @@ class PlayerEditor(QWidget):
         self._result_list.clear()
 
         if not text:
-            # Show first 30 when no search
-            results = self._search_index[:30]
+            # Sort by player ID descending (highest IDs first), show first 30
+            sorted_by_pid = sorted(self._search_index, key=lambda x: x[2], reverse=True)
+            results = sorted_by_pid[:30]
             showing = f"Showing first {30} of {len(self._search_index)}"
         else:
             results = []
@@ -337,10 +340,12 @@ class PlayerEditor(QWidget):
         rec = self._records[self._current_row]
         pid = rec.get("playerid", 0)
         name = self._name_resolver.get_name(rec)
+        common_name = self._name_resolver.get_common_name(rec)
         highlight_pos = name.startswith("Player") if name else True
 
         # --- Header ---
-        header_text = f"<b>{name}</b>  (ID={pid})"
+        common_suffix = f"  ({common_name})" if common_name and common_name != name else ""
+        header_text = f"<b>{name}</b>{common_suffix}  (ID={pid})"
         header = QLabel(header_text)
         header.setStyleSheet(
             "font-size: 20px; padding: 10px 4px; "
@@ -363,7 +368,7 @@ class PlayerEditor(QWidget):
         pot = rec.get("potential", "?")
         pos = self._get_position_text(self._current_row)
         age = self._approximate_age(rec.get("birthdate", 0))
-        nat = rec.get("nationality", "?")
+        nat = self._name_resolver.get_nation_name(rec.get("nationality", 0))
 
         summary_widget = QWidget()
         summary_widget.setStyleSheet(
@@ -450,6 +455,36 @@ class PlayerEditor(QWidget):
     def _make_widget(self, fd: FieldDescriptor, field_name: str, value) -> Optional[QWidget]:
         type_name = fd.field_type.name
 
+        # Position fields: use QComboBox with position abbreviations
+        if field_name in POSITION_FIELDS:
+            w = QComboBox()
+            w.setFixedWidth(100)
+            # Secondary positions can be -1 (no position)
+            if field_name != "preferredposition1":
+                w.addItem("---", -1)
+            # Add all standard positions sorted by code
+            for code in sorted(POSITION_NAMES.keys()):
+                w.addItem(POSITION_NAMES[code], code)
+            # Set current value
+            idx = w.findData(int(value))
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+            w.currentIndexChanged.connect(lambda i, fn=field_name: self._on_changed(fn))
+            return w
+
+        # Nationality: use QComboBox with English nation names
+        if field_name == "nationality":
+            w = QComboBox()
+            w.setFixedWidth(150)
+            nations = self._name_resolver.get_nations()
+            for code in sorted(nations.keys()):
+                w.addItem(nations[code], code)
+            idx = w.findData(int(value))
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+            w.currentIndexChanged.connect(lambda i, fn=field_name: self._on_changed(fn))
+            return w
+
         if type_name == "Integer":
             if field_name == "playerid":
                 w = QSpinBox()
@@ -510,6 +545,15 @@ class PlayerEditor(QWidget):
         self._modified.clear()
         self._rebuild_form()
 
+    def _widget_value(self, field_name: str):
+        """Get the current value from a form widget (QSpinBox or QComboBox)."""
+        w = self._spinboxes.get(field_name)
+        if w is None:
+            return None
+        if isinstance(w, QComboBox):
+            return w.itemData(w.currentIndex())
+        return w.value()
+
     def _on_apply(self):
         """Write modified values back to the data model."""
         if self._current_row is None:
@@ -521,12 +565,10 @@ class PlayerEditor(QWidget):
         rec = self._records[self._current_row]
         count = 0
         for field_name in self._modified:
-            spin = self._spinboxes.get(field_name)
-            if spin:
-                val = spin.value()
-                if val != rec.get(field_name):
-                    rec[field_name] = val
-                    count += 1
+            val = self._widget_value(field_name)
+            if val is not None and val != rec.get(field_name):
+                rec[field_name] = val
+                count += 1
 
         if count:
             pid = rec.get("playerid", 0)
@@ -543,9 +585,9 @@ class PlayerEditor(QWidget):
         rec = self._records[self._current_row]
         changes = {}
         for fn in self._modified:
-            spin = self._spinboxes.get(fn)
-            if spin and spin.value() != rec.get(fn):
-                changes[fn] = spin.value()
+            val = self._widget_value(fn)
+            if val is not None and val != rec.get(fn):
+                changes[fn] = val
         return [(self._current_row, changes)] if changes else []
 
     def apply_changes(self) -> int:

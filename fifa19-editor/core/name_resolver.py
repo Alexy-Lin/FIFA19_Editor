@@ -8,14 +8,17 @@ from .db_file import DbFile
 
 
 class NameResolver:
-    """Resolves player names from available data sources in the save file.
+    """Resolves player names and nationality from available data sources.
 
-    Sources (in priority order):
+    Player name sources (in priority order):
       1. editedplayernames:  playerid → firstname/surname (from save file, ~300 players)
       2. dcplayernames:      nameid → name string (2862 entries, shared across players)
       3. player_names.csv:   static CSV file with player ID → display name mappings
       4. commonnameid fallback:  look up in dcplayernames
       5. Fallback: "Player #{pid}"
+
+    Nationality source:
+      - data/nations.csv:   extracted from RDBM template DB (218 nations)
     """
 
     def __init__(self, db: DbFile):
@@ -23,6 +26,7 @@ class NameResolver:
         self._dc_names: Dict[int, str] = {}  # nameid -> best name string
         self._csv_names: Dict[int, str] = {}  # pid -> display_name (from CSV)
         self._csv_common_names: Dict[int, str] = {}  # pid -> common_name (from common_names.csv)
+        self._nations: Dict[int, str] = {}  # nationid -> nationname (from nations.csv)
 
         # Build editedplayernames lookup
         et = db.get_table("nQVU")
@@ -55,8 +59,12 @@ class NameResolver:
                     for row in reader:
                         pid_str = (row.get("playerid") or "").strip()
                         display_name = (row.get("display_name") or "").strip()
+                        common_name = (row.get("common_name") or "").strip()
                         if pid_str.isdigit() and display_name:
                             self._csv_names[int(pid_str)] = display_name
+                        # Also store common_name column as a common name source
+                        if pid_str.isdigit() and common_name and common_name != display_name:
+                            self._csv_common_names[int(pid_str)] = common_name
             except Exception:
                 pass
 
@@ -72,6 +80,34 @@ class NameResolver:
                             self._csv_common_names[int(pid_str)] = name
             except Exception:
                 pass
+
+        # Build nation name lookup from nations.csv (extracted from template DB)
+        nations_path = Path(__file__).resolve().parent.parent / "data" / "nations.csv"
+        if nations_path.exists():
+            try:
+                with nations_path.open("r", encoding="utf-8") as f:
+                    for row in csv.DictReader(f):
+                        nid_str = (row.get("nationid") or "").strip()
+                        name = (row.get("nationname") or "").strip()
+                        if nid_str.isdigit() and name:
+                            self._nations[int(nid_str)] = name
+            except Exception:
+                pass
+
+    def get_nation_name(self, nationid: int) -> str:
+        """Get English name for a nationality code."""
+        return self._nations.get(nationid, str(nationid))
+
+    def get_nation_code(self, nation_name: str) -> Optional[int]:
+        """Reverse lookup: nation name → code."""
+        for code, name in self._nations.items():
+            if name.lower() == nation_name.lower():
+                return code
+        return None
+
+    def get_nations(self) -> Dict[int, str]:
+        """Get the full nation mapping (code → name)."""
+        return dict(self._nations)
 
     def get_name(self, record: dict) -> str:
         """Build the best possible display name for a player record."""
@@ -108,6 +144,21 @@ class NameResolver:
 
         # 5. Fallback
         return f"Player #{pid}"
+
+    def get_common_name(self, record: dict) -> str:
+        """Get the common/short name for a player (e.g. 'Ronaldo' for R9, 'Kaká')."""
+        pid = record.get("playerid", 0)
+        # 1. Common names CSV (Icons)
+        if pid in self._csv_common_names:
+            return self._csv_common_names[pid]
+        # 2. Look up commonnameid in dcplayernames
+        cnid = record.get("commonnameid", 0)
+        if cnid > 0 and cnid in self._dc_names:
+            return self._dc_names[cnid]
+        # 3. CSV display name (might differ from common name, but useful fallback)
+        if pid in self._csv_names:
+            return self._csv_names[pid]
+        return ""
 
     def get_name_by_player_id(self, playerid: int) -> str:
         """Get display name for a player by ID."""

@@ -77,10 +77,10 @@ STATS_COLUMNS = [
 ]
 
 POSITION_NAMES = {
-    0: "GK", 1: "SW", 2: "RWB", 3: "RB", 4: "CB", 5: "LB",
-    6: "LWB", 7: "CDM", 8: "RM", 9: "CM", 10: "LM",
-    11: "CAM", 12: "RF", 13: "CF", 14: "LF", 15: "RW",
-    16: "ST", 17: "LW",
+     0: "GK",   1: "SW",    2: "RWB",   3: "RB",
+     5: "CB",   7: "LB",    8: "LWB",  10: "CDM",
+    12: "RM",  14: "CM",   16: "LM",   18: "CAM",
+    21: "CF",  23: "RW",   25: "ST",   27: "LW",
 }
 
 
