@@ -1,5 +1,6 @@
 """SavFile — handles FIFA 19 .sav container files (FBCHUNKS wrapper + DB data)."""
 
+import struct
 from pathlib import Path
 from typing import Optional
 from .db_file import DbFile
@@ -49,9 +50,28 @@ class SavFile:
         # Serialize DB
         db_data = self.db.save()
 
+        # Prepare FBCHUNKS header
+        fbchunks = bytearray(self.fbchunks_header)
+
+        # 1) Zero 5 mystery bytes (118-122) after "SaveType_Squads\0"
+        #    RDBM zeroes these — leaving the original game-specific CRC/hash
+        #    bytes causes FIFA 19 to reject the save.
+        if len(fbchunks) >= 123:
+            for i in range(118, 123):
+                fbchunks[i] = 0
+
+        # 2) Update DataSize (bytes 14-17 in little-endian)
+        #    Formula: DataSize = total_file_size - 102
+        #    The first 18 bytes are the chunk header prefix (FBCHUNKS+ver+type+DataSize)
+        #    and the last 84 bytes are chunk trailer padding (inside the DB region
+        #    but excluded from DataSize).  18 + 84 = 102.
+        total_size = len(fbchunks) + len(db_data)
+        new_data_size = total_size - 102
+        fbchunks[14:18] = struct.pack("<I", new_data_size)
+
         # Write: FBCHUNKS header + DB data
         with open(output_path, "wb") as f:
-            f.write(self.fbchunks_header)
+            f.write(bytes(fbchunks))
             f.write(db_data)
 
         return output_path

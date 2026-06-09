@@ -147,19 +147,19 @@ class DbFile:
             offset_bytes = struct.pack("<I", table_offsets.get(name, 0))
             full_data[entry_offset + 4 : entry_offset + 8] = offset_bytes
 
-        # 2) Compute and patch header CRC: covers bytes 0-19 (before CRC field)
+        # 2) Update file_length (must be before CRC computation!)
+        file_length = len(full_data)
+        full_data[8:12] = struct.pack("<I", file_length)
+
+        # 3) Compute and patch header CRC: covers bytes 0-19 (before CRC field)
         header_crc = _compute_crc(bytes(full_data[:20]))
         full_data[20:24] = struct.pack("<I", header_crc)
 
-        # 3) Compute and patch short names CRC: covers table directory entries
+        # 4) Compute and patch short names CRC: covers table directory entries
         dir_bytes = bytes(full_data[table_dir_start:table_dir_end])
         short_names_crc = _compute_crc(dir_bytes)
         sn_crc_pos = table_dir_end
         full_data[sn_crc_pos : sn_crc_pos + 4] = struct.pack("<I", short_names_crc)
-
-        # 4) Update file_length
-        file_length = len(full_data)
-        full_data[8:12] = struct.pack("<I", file_length)
 
         return bytes(full_data)
 

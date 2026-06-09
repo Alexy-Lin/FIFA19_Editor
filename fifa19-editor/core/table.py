@@ -287,13 +287,11 @@ class Table:
         content = table_data[36:]
         records_crc = _compute_crc(content)
 
-        # Build new trailing (24-byte RDBM format): CRC + metadata
-        records_crc = _compute_crc(content)
-        TRAILING_SIZE = 24
-        meta = self._trailing_data[4:TRAILING_SIZE] if len(self._trailing_data) >= 4 else b""
-        if len(meta) < TRAILING_SIZE - 4:
-            meta += b"\x00" * (TRAILING_SIZE - 4 - len(meta))
-        new_trailing = struct.pack("<I", records_crc) + meta[:TRAILING_SIZE - 4]
+        # RDBM trailing format: 4-byte CRC only (no metadata padding).
+        # When field_count_raw = n_fields (no 0x100 flag), the game uses standard
+        # CRC-32/MPEG-2 and expects only the 4-byte CRC as trailing data, not the
+        # game-native metadata footer.
+        new_trailing = struct.pack("<I", records_crc)
 
         table_data += new_trailing
         return table_data

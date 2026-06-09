@@ -1,14 +1,50 @@
 # FIFA 19 存档格式修复总结
 
-## 问题
+## 状态：✅ 已修复
 
-用自定义工具修改 FIFA 19 的 `Squads*.sav` 存档文件后，游戏报"存档损坏"。
+共发现并修复了 **3 个格式问题**，GUI 修改存档后游戏正常加载。
 
-## 根因分析
+---
 
-FIFA 19 存档使用 **Frostbite 引擎的二进制数据库格式**。通过对比分析 RDBM 19（Revolution Database Master）的 `FifaLibrary19.dll`，发现游戏保存和编辑器保存使用了两种不同的格式标识。
+## 修复 1: 表尾部数据（Trailing Data）— `table.py`
 
-### 关键字段：`field_count_raw`（表头字节 24-27）
+RDBM 保存时每个表尾部只用 **4 字节**（仅 CRC-32/MPEG-2），而非原版的变长尾部（4/20/28/36 字节）。
+
+```python
+# table.py save() 方法中
+new_trailing = struct.pack("<I", records_crc)  # 仅 4 字节 CRC
+table_data += new_trailing
+```
+
+## 修复 2: FBCHUNKS SaveType 后的 5 字节 — `sav_file.py`
+
+`"SaveType_Squads\0"` 之后有 5 字节（偏移 118-122）包含游戏专用哈希值，需归零：
+
+```python
+fbchunks = bytearray(self.fbchunks_header)
+for i in range(118, 123):
+    fbchunks[i] = 0  # 归零
+```
+
+## 修复 3: FBCHUNKS DataSize 字段 — `sav_file.py`
+
+FBCHUNKS 头部的 `DataSize` 字段（字节 14-17, little-endian uint32）需遵循公式：
+
+> **DataSize = 文件总大小 - 102**
+
+其中 102 = 18（chunk 头部前缀）+ 84（chunk 尾部数据）。表大小变化后必须更新此值，否则游戏读数据超 EOF 导致加载失败。
+
+```python
+total_size = len(fbchunks) + len(db_data)
+new_data_size = total_size - 102
+fbchunks[14:18] = struct.pack("<I", new_data_size)
+```
+
+---
+
+## 格式关键字段
+
+### `field_count_raw`（表头字节 24-27）
 
 | 格式 | `field_count_raw` 值 | CRC 算法 |
 |------|---------------------|----------|

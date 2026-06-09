@@ -117,12 +117,20 @@ Known field short names:
 - [x] Float reading
 - [x] XML metadata integration (field name mapping)
 - [x] Record filtering (valid vs deleted slots)
-- [ ] Bit-packed integer writing (DbWriter)
-- [ ] CRC32 recalculation on save
+- [x] Bit-packed integer writing (DbWriter)
+- [x] CRC32 recalculation on save (CRC-32/MPEG-2 via `_compute_crc`)
+- [x] Save back to .sav file (3 format fixes — see `docs/save-format-fix.md`)
 - [ ] Huffman-compressed string decoding
-- [ ] Save back to .sav file
-- [ ] GUI (PySide6)
+- [x] GUI (PySide6) — player editor + table browser
 - [ ] Unit tests
+
+## Save Format (3 Critical Fixes)
+
+See `docs/save-format-fix.md` for full details.
+
+1. **Trailing data** (`table.py`): Write 4-byte CRC only, not 24-byte padded footer
+2. **FBCHUNKS bytes 118-122** (`sav_file.py`): Zero the 5 mystery bytes after "SaveType_Squads\0"
+3. **FBCHUNKS DataSize** (`sav_file.py`): Update bytes 14-17 to `total_file_size - 102`
 
 ## External References
 
